@@ -1,11 +1,11 @@
 import os
-import google.generativeai as genai
+from google import genai
 from django.db import connection
 from decimal import Decimal
 from groq import Groq
 import wikipedia
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # --- AGENT 1: THE DATA ENGINEER ---

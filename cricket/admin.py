@@ -3,7 +3,7 @@ from django.contrib import admin
 # Register your models here.
 
 from django.contrib import admin
-from .models import Player, Match, InningMetadata, Delivery, Powerplay
+from .models import Player, Match, InningMetadata, Delivery, Powerplay, SmartSQLExample
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
@@ -37,3 +37,9 @@ class PowerplayAdmin(admin.ModelAdmin):
     ordering = ('match', 'inning_number', 'start_over')
     list_filter = ('powerplay_type', 'inning_number')    
     search_fields = ('match__match_id',)
+
+
+@admin.register(SmartSQLExample)
+class SmartSQLExampleAdmin(admin.ModelAdmin):
+    list_display = ('question', 'sql_query')
+    list_filter = ('question', 'sql_query')

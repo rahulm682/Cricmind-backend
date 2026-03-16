@@ -8,7 +8,6 @@ class Command(BaseCommand):
     help = 'Ingests actual Cricsheet JSON files into the database and refreshes Materialized Views'
 
     def add_arguments(self, parser):
-        # Allow passing a specific file or a directory
         parser.add_argument('path', type=str, help='Path to the Cricsheet JSON file or directory')
 
     def handle(self, *args, **kwargs):
@@ -24,8 +23,6 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"Path does not exist: {path}"))
             return
 
-        # --- THE FINAL STEP: REFRESH THE VIEWS ---
-        # Once all JSON files are inserted into the base tables, update the OLAP views
         self.stdout.write(self.style.WARNING("Refreshing Materialized Views... This may take a moment."))
         try:
             with connection.cursor() as cursor:
@@ -48,14 +45,12 @@ class Command(BaseCommand):
             data = json.load(f)
 
         try:
-            # Wrap the entire file ingestion in a transaction
             with transaction.atomic():
                 self.stdout.write(f"Parsing Match: {match_id}...")
                 
                 info = data.get('info', {})
                 innings_data = data.get('innings', [])
 
-                # 1. Process Players (The Registry)
                 registry = info.get('registry', {}).get('people', {})
                 player_instances = {}
                 
@@ -66,7 +61,6 @@ class Command(BaseCommand):
                     )
                     player_instances[name] = player
 
-                # 2. Process Match Metadata
                 outcome = info.get('outcome', {})
                 winner = outcome.get('winner')
                 by = outcome.get('by', {})
@@ -80,7 +74,6 @@ class Command(BaseCommand):
                 pom_list = info.get('player_of_match', [])
                 player_of_match = pom_list[0] if pom_list else None
 
-                # Extract Captains (Cricsheet occasionally includes this in an official roster)
                 captains_dict = info.get('registry', {}).get('captains', {})
                 team_a_captain = None
                 team_b_captain = None
@@ -105,7 +98,6 @@ class Command(BaseCommand):
                     team_b_captain=team_b_captain
                 )
 
-                # 3. Process Innings, Powerplays, and Deliveries
                 deliveries_to_create = []
 
                 for inning_idx, inning in enumerate(innings_data):
@@ -113,7 +105,6 @@ class Command(BaseCommand):
                     overs = inning.get('overs', [])
                     target_runs = inning.get('target', {}).get('runs')
 
-                    # Create Inning Metadata
                     InningMetadata.objects.create(
                         match=match,
                         inning_number=inning_idx + 1,

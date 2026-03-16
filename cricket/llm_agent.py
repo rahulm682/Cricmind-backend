@@ -1,15 +1,22 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from django.db import connection
 from decimal import Decimal
 from groq import Groq
 import wikipedia
 import datetime
+import logging
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+from pgvector.django import CosineDistance
+from cricket.models import SmartSQLExample
+
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- AGENT 1: THE DATA ENGINEER ---
+logger = logging.getLogger(__name__)
+
+# --- AGENT 1: THE DATA ENGINEER (Optimized for RAG) ---
 SQL_SYSTEM_PROMPT = """
 You are an expert cricket data analyst and a master PostgreSQL developer. 
 Your task is to convert the user's natural language question into a highly optimized, read-only PostgreSQL query.
@@ -33,40 +40,32 @@ Table 2: vw_delivery_analytics (Ball-by-ball data)
 
 CRITICAL RULES:
 1. STRICTLY ONLY return the ONE final raw SQL query. NO explanations, NO preamble, NO conversational text. Do NOT output multiple queries. Your entire response MUST be executable PostgreSQL.
-2. Use ILIKE with wildcards for string matching on player names (e.g., batter_name ILIKE '%Kohli%').
-3. NEVER write an INSERT, UPDATE, DELETE, or DROP query. Only SELECT.
-4. OVER NUMBERING: over_number is 0-indexed. The 1st over is over_number = 0.
-5. OUT OF DOMAIN: If the query is completely outside this schema (e.g., ODI stats, live scores, international teams), output: SELECT 'OUT_OF_DOMAIN' AS status;
-6. NOT CRICKET: If it is not about cricket (e.g., politics, movies), output: SELECT 'NOT_CRICKET' AS status;
+2. NEVER write an INSERT, UPDATE, DELETE, or DROP query. Only SELECT.
+3. OVER NUMBERING: over_number is 0-indexed. The 1st over is over_number = 0.
+4. OUT OF DOMAIN: If the query is completely outside this schema (e.g., ODI stats, live scores, international teams), output: SELECT 'OUT_OF_DOMAIN' AS status;
+5. NOT CRICKET: If it is not about cricket (e.g., politics, movies), output: SELECT 'NOT_CRICKET' AS status;
+6. NO UNIONS: NEVER use UNION or UNION ALL. If you need to calculate different sets of stats (like batting and fielding) for a single player, calculate them in separate CTEs (WITH clause) and JOIN them together to return a single row of columns.
+7. VIEW ISOLATION: NEVER join `vw_match_summary` and `vw_delivery_analytics` together in the same query. If the user asks for a player's stats or just types their name, you must ONLY query `vw_delivery_analytics`.
+8. PRECISE NAME MATCHING: Players are stored in the database as Initials + Last Name (e.g., 'V Kohli', 'SS Iyer'). If the user asks for a full name like 'Shreyas Iyer', you MUST use a strict ILIKE pattern combining the first initial and last name: `ILIKE 'S%Iyer%'`. Do NOT just use the last name (e.g., `ILIKE '%Iyer%'`) as it will incorrectly return multiple different players.
 
-7. AMBIGUITY OF 'FINAL': In sports, "final" means the tournament Championship match, NOT the most recent chronological match. If the user asks for "final matches", do NOT use ORDER BY date DESC LIMIT 1;
-
-EXAMPLES OF SMART COLUMN USAGE:
-- Strike Rate: (SUM(batter_runs) * 100.0) / NULLIF(SUM(is_legal_ball), 0)
-- Economy Rate: (SUM(total_runs) * 6.0) / NULLIF(SUM(is_legal_ball), 0)
-- Bowler Wickets taken: SUM(is_bowler_wicket)
-- Overs Bowled: SUM(is_legal_ball) / 6.0
-- Catches taken by a fielder/keeper: COUNT(*) WHERE fielder_name ILIKE '%Dhoni%' AND dismissal_kind IN ('caught', 'caught and bowled')
-- Stumpings by a keeper: COUNT(*) WHERE fielder_name ILIKE '%Dhoni%' AND dismissal_kind = 'stumped'
-- Run outs by a fielder: COUNT(*) WHERE fielder_name ILIKE '%Dhoni%' AND dismissal_kind = 'run out'
-- Wicketkeepers only: Filter by players who have stumpings: WHERE fielder_name IN (SELECT fielder_name FROM vw_delivery_analytics WHERE dismissal_kind = 'stumped')
-- Runs vs Opponent: SUM(batter_runs) WHERE batter_name ILIKE '%Dhoni%' AND bowling_team ILIKE '%Mumbai Indians%'
-- Tournament Finals: SELECT * FROM vw_match_summary WHERE event_stage = 'Final'
-- Other Playoff Stages (Qualifiers, Eliminators, Semi Finals): SELECT * FROM vw_match_summary WHERE event_stage ILIKE '%Eliminator%' OR event_stage ILIKE '%Qualifier%' OR event_stage ILIKE '%Semi Final%'
+Here are highly relevant SQL examples retrieved from the database to help you answer this specific question. USE THESE EXACT PATTERNS AND NAMES:
+{retrieved_examples}
 """
 
 # --- AGENT 2: THE SPORTS ANALYST ---
 NL_SYSTEM_PROMPT = """
-You are a friendly, expert cricket commentator and data analyst. 
-Your job is to take a user's original question and the raw JSON data returned from a SQL database, and output a concise, conversational answer.
+You are an expert, enthusiastic, and conversational Cricket Data Analyst. 
+Your job is to take a user's original question and the raw JSON data returned from a database, and output a concise, friendly, and strictly factual answer.
 
 CRITICAL RULES:
-1. If the database result is missing a specific parameter, explicitly state that it doesn't exist.
-2. Keep the response engaging, factual, and passionate about cricket. 
-3. Do NOT mention the SQL query, database schemas, or JSON formatting.
-4. LANGUAGE MATCHING: You MUST reply in the exact same language or dialect the user used. e.g. If they ask in Hindi or Hinglish, reply in natural, conversational Hinglish.
-5. DEBATE RESOLUTION: If comparing two players, use the provided stats to declare a statistical winner based on the data.
-6. LIVE WEB KNOWLEDGE: If you receive 'Web Search Context' instead of a database result, use that exact real-time information to answer the question. Do not rely on your outdated training memory. Trust the web context completely.
+1. STRICT DATA ADHERENCE: Base your answer *only* on the provided data. Never guess or assume.
+2. MISSING DATA: If the data is missing, explicitly state it is unavailable.
+3. TONE & STYLE: Act like a friendly sports anchor. Present the stats naturally in a flowing, conversational paragraph. Use bullet points only if listing out more than 3 stats.
+4. HIDE THE TECH: NEVER mention "rows", "records", "JSON", "SQL queries", or "database". Just give the answer directly.
+5. NATURAL NAME RESOLUTION: If the database returns initials like "SS Iyer", just use the full name "Shreyas Iyer" naturally. NEVER explain the name mapping.
+6. TARGET LOCK: If the database accidentally returns data for multiple players (e.g., Shreyas Iyer and Venkatesh Iyer), ONLY talk about the exact player the user originally asked about. Completely ignore the other players in the data.
+7. LANGUAGE MATCHING: You MUST reply in the exact same language or dialect the user used.
+8. LIVE WEB KNOWLEDGE: If you receive 'Web Search Context' instead of a database result, use that exact real-time information to answer the question. Do not rely on your outdated training memory.
 """
 
 def contextualize_query(raw_question, chat_history):
@@ -74,7 +73,8 @@ def contextualize_query(raw_question, chat_history):
         return raw_question
         
     history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in chat_history[-3:]])
-    prompt = f"""Given the conversation history, rewrite the user's latest question to be a standalone question. Replace pronouns (he, she, they, it) with the actual player or team names. Output ONLY the rewritten question, no extra conversational text.
+    prompt = f"""Given the conversation history, rewrite the user's latest question to be a standalone question. Replace pronouns (he, she, they, it) with the actual player or team names. 
+    CRITICAL: Do NOT add any extra words, context, or assumptions. If the user just types a name (e.g., "rohit sharma"), output exactly that name and nothing else.
 
 History:
 {history_text}
@@ -93,33 +93,66 @@ Rewritten Question:"""
         return raw_question
 
 
+
 def generate_and_execute_sql(user_question):
-    # --- PHASE 1: GENERATE SQL ---
+    logger.info(">>> Starting generate_and_execute_sql pipeline")
+    
+    retrieved_examples_text = ""
+    try:
+        logger.info("Step 0: Fetching RAG cheat codes from pgvector...")
+        embed_response = gemini_client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=user_question,
+            config=types.EmbedContentConfig(output_dimensionality=768) 
+        )
+        query_vector = embed_response.embeddings[0].values
+
+        similar_examples = SmartSQLExample.objects.order_by(
+            CosineDistance('embedding', query_vector)
+        )[:3]
+
+        if similar_examples:
+            logger.info(f"Found {len(similar_examples)} RAG examples. Injecting into prompt.")
+            retrieved_examples_text = "\n\n".join(
+                [f"- Question Context: {ex.question}\n  SQL Pattern: {ex.sql_query}" for ex in similar_examples]
+            )
+    except Exception as e:
+        logger.warning(f"RAG Retrieval failed (Proceeding without RAG): {e}")
+
+    dynamic_system_prompt = SQL_SYSTEM_PROMPT.format(retrieved_examples=retrieved_examples_text)
+
+    logger.info("Step 1: Generating SQL via Groq...")
     try:
         sql_response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": SQL_SYSTEM_PROMPT},
+                {"role": "system", "content": dynamic_system_prompt},
                 {"role": "user", "content": f"User Question: {user_question}\nSQL Query:"}
             ],
             temperature=0.0 
         )
         raw_llm_response = sql_response.choices[0].message.content
     except Exception as e:
+        logger.error(f"Groq SQL Generation failed: {str(e)}")
         return {"error": f"Groq SQL Generation failed: {str(e)}"}
     
     cleaned_sql = raw_llm_response.strip().replace("```sql", "").replace("```", "").strip()
+    logger.info(f"Generated Raw SQL: {cleaned_sql}")
     
     forbidden_keywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'TRUNCATE']
     if any(keyword in cleaned_sql.upper() for keyword in forbidden_keywords):
+        logger.critical(f"Security Alert: Forbidden SQL keyword detected in query: {cleaned_sql}")
         return {"error": "Forbidden destructive query detected.", "sql_used": cleaned_sql}
 
-    # --- PHASE 2: EXECUTE SQL & GENERATE NATURAL LANGUAGE ---
+    logger.info("Step 2: Executing SQL in PostgreSQL...")
     try:
         with connection.cursor() as cursor:
             cursor.execute(cleaned_sql)
             columns = [col[0] for col in cursor.description]
             results = cursor.fetchall()
+            
+            logger.info(f"SQL execution successful. Retrieved {len(results)} rows.")
+            
             formatted_data = []
             for row in results:
                 row_dict = {}
@@ -132,41 +165,37 @@ def generate_and_execute_sql(user_question):
                     row_dict[col] = value
                 formatted_data.append(row_dict)
 
-            # --- THE WEB SEARCH ROUTER ---
             context_type = "Database Result"
             context_data = formatted_data
 
             if len(formatted_data) == 1:
                 status = formatted_data[0].get('status')
                 
-                # The Bouncer: Block non-cricket queries immediately
                 if status == 'NOT_CRICKET':
+                    logger.info("Router: Detected Non-Cricket Query.")
                     context_type = "System Message"
                     context_data = [{"body": "The user asked a non-cricket question. Politely remind them that you are Cricmind, an AI specialized in cricket, and ask them a fun cricket trivia question to get them back on topic."}]
                 
-                # The Researcher: Fetch cricket history from Wikipedia
                 elif status == 'OUT_OF_DOMAIN':
+                    logger.info("Router: Detected Out of Domain Query. Executing Wikipedia fallback...")
                     try:
-                        # 1. Ask Groq to format the question as a Wikipedia Page Title
-                        search_prompt = f"Convert this cricket question into a specific Wikipedia search query. If the user asks about a final match, explicitly include the word 'final' (e.g., '2024 ICC Men's T20 World Cup final'). Output ONLY the title, no quotes: {user_question}"
+                        search_prompt = f"Convert this cricket question into a specific Wikipedia search query. Output ONLY the title, no quotes: {user_question}"
                         keyword_response = groq_client.chat.completions.create(
                             model="llama-3.3-70b-versatile",
                             messages=[{"role": "user", "content": search_prompt}],
                             temperature=0.0 
                         )
                         search_query = keyword_response.choices[0].message.content.strip().replace('"', '')
+                        logger.info(f"Searching Wikipedia for: {search_query}")
                         
-                        # 2. Search Wikipedia for the closest matching page
                         wiki_search_results = wikipedia.search(search_query)
                         
                         if wiki_search_results:
-                            # Grab the exact summary from the top result
                             best_page = wiki_search_results[0]
                             try:
                                 page_summary = wikipedia.summary(best_page, sentences=10)
                                 context_data = [{"source": best_page, "body": page_summary}]
                             except wikipedia.exceptions.DisambiguationError as e:
-                                # If Wiki gets confused, grab the first option
                                 page_summary = wikipedia.summary(e.options[0], sentences=10)
                                 context_data = [{"source": e.options[0], "body": page_summary}]
                         else:
@@ -174,10 +203,11 @@ def generate_and_execute_sql(user_question):
 
                         context_type = "Web Search Context"
                     except Exception as e:
+                        logger.error(f"Wikipedia search failed: {str(e)}")
                         context_type = "Web Search Context"
                         context_data = [{"body": f"Wikipedia search failed: {str(e)}"}]
                 
-            # --- AGENT 2 KICKS IN HERE ---
+            logger.info("Step 3: Generating final Natural Language summary...")
             try:
                 nl_prompt = f"User Question: {user_question}\n{context_type}: {context_data}\nProvide a natural language answer:"
                 
@@ -187,10 +217,12 @@ def generate_and_execute_sql(user_question):
                         {"role": "system", "content": NL_SYSTEM_PROMPT},
                         {"role": "user", "content": nl_prompt}
                     ],
-                    temperature=0.3 # Lowered slightly to stick strictly to facts
+                    temperature=0.3 
                 )
                 nl_text = nl_response.choices[0].message.content.strip()
-            except Exception:
+                logger.info("Pipeline complete. Returning answer.")
+            except Exception as e:
+                logger.error(f"Agent 2 summary failed: {str(e)}")
                 nl_text = "Here is the data you requested."
 
             return {
@@ -201,8 +233,11 @@ def generate_and_execute_sql(user_question):
             }
             
     except Exception as e:
+        logger.error(f"PostgreSQL Execution failed: {str(e)}")
         return {
             "success": False, 
             "error": f"Database execution failed: {str(e)}", 
             "sql_used": cleaned_sql
         }
+
+         

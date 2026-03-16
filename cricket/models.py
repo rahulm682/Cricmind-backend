@@ -1,5 +1,18 @@
 from django.db import models
+from django.contrib.auth.models import User
 from pgvector.django import VectorField
+
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    
+    # Add your extra fields here!
+    phone_number = models.CharField(max_length=15, blank=True, null=True)
+    favorite_team = models.CharField(max_length=50, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.email} Profile"
 
 class Player(models.Model):
     # 8-character Cricsheet ID as the primary key
@@ -91,3 +104,36 @@ class SemanticCache(models.Model):
 
     def __str__(self):
         return self.original_question
+
+
+class SmartSQLExample(models.Model):
+    """
+    Stores few-shot text-to-SQL examples for RAG.
+    The LLM will retrieve the top 3 most relevant examples based on the user's question.
+    """
+    question = models.CharField(max_length=500, help_text="The natural language question (e.g., 'strike rate of virat kohli')")
+    sql_query = models.TextField(help_text="The exact SQL syntax to use as a template")
+    
+    embedding = VectorField(dimensions=768, null=True, blank=True, help_text="The vector representation of the question")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.question
+
+
+class ChatSession(models.Model):
+    # use CharField as the primary key so it perfectly matches the 
+    # Date.now().toString() IDs React frontend is already generating
+    id = models.CharField(max_length=50, primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='chats')
+    title = models.CharField(max_length=255)
+    messages = models.JSONField(default=list)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at'] # Always put the newest chats at the top of the sidebar
+
+    def __str__(self):
+        return f"{self.user.username} - {self.title}"
+
