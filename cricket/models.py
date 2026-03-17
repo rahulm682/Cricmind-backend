@@ -6,7 +6,6 @@ from pgvector.django import VectorField
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     
-    # Add your extra fields here!
     phone_number = models.CharField(max_length=15, blank=True, null=True)
     favorite_team = models.CharField(max_length=50, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

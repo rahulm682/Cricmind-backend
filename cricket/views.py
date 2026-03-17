@@ -16,7 +16,6 @@ from .news_service import get_news_provider
 from .llm_agent import groq_client
 from .llm_agent import generate_and_execute_sql, contextualize_query
 
-# Set up the logger
 logger = logging.getLogger(__name__)
 
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
