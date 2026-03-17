@@ -13,3 +13,7 @@ COPY requirements.txt /app/
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . /app/
+
+RUN chmod +x render-start.sh
+EXPOSE 10000
+CMD ["./render-start.sh"]
