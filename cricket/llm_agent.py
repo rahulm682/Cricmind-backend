@@ -16,7 +16,7 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 logger = logging.getLogger(__name__)
 
-# --- AGENT 1: THE DATA ENGINEER (Optimized for RAG) ---
+# --- AGENT 1: THE DATA ENGINEER ---
 SQL_SYSTEM_PROMPT = """
 You are an expert cricket data analyst and a master PostgreSQL developer. 
 Your task is to convert the user's natural language question into a highly optimized, read-only PostgreSQL query.
@@ -47,6 +47,7 @@ CRITICAL RULES:
 6. NO UNIONS: NEVER use UNION or UNION ALL. If you need to calculate different sets of stats (like batting and fielding) for a single player, calculate them in separate CTEs (WITH clause) and JOIN them together to return a single row of columns.
 7. VIEW ISOLATION: NEVER join `vw_match_summary` and `vw_delivery_analytics` together in the same query. If the user asks for a player's stats or just types their name, you must ONLY query `vw_delivery_analytics`.
 8. PRECISE NAME MATCHING: Players are stored in the database as Initials + Last Name (e.g., 'V Kohli', 'SS Iyer'). If the user asks for a full name like 'Shreyas Iyer', you MUST use a strict ILIKE pattern combining the first initial and last name: `ILIKE 'S%Iyer%'`. Do NOT just use the last name (e.g., `ILIKE '%Iyer%'`) as it will incorrectly return multiple different players.
+9. MILESTONES: To count centuries (100+) or fifties (50+), always use a CTE to first SUM batter_runs per match_id, then COUNT the results in the outer query.
 
 Here are highly relevant SQL examples retrieved from the database to help you answer this specific question. USE THESE EXACT PATTERNS AND NAMES:
 {retrieved_examples}

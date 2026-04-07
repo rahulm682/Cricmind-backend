@@ -1,9 +1,5 @@
 from django.contrib import admin
-
-# Register your models here.
-
-from django.contrib import admin
-from .models import Player, Match, InningMetadata, Delivery, Powerplay, SmartSQLExample
+from .models import Player, Match, InningMetadata, Delivery, Powerplay, SemanticCache, SmartSQLExample
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
@@ -43,3 +39,8 @@ class PowerplayAdmin(admin.ModelAdmin):
 class SmartSQLExampleAdmin(admin.ModelAdmin):
     list_display = ('question', 'sql_query')
     list_filter = ('question', 'sql_query')
+
+
+@admin.register(SemanticCache)
+class SemanticCacheAdmin(admin.ModelAdmin):
+    list_display = ('original_question', 'response_payload')

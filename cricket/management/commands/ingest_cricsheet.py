@@ -4,6 +4,18 @@ from django.core.management.base import BaseCommand
 from django.db import transaction, connection
 from cricket.models import Player, Match, InningMetadata, Powerplay, Delivery
 
+def refresh_all_materialized_views():
+    with connection.cursor() as cursor:
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_match_summary;")
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_delivery_analytics;")
+        
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_batter_stats;")
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_bowler_stats;")
+        
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_player_master;")
+        cursor.execute("REFRESH MATERIALIZED VIEW vw_team_stats;")
+
+
 class Command(BaseCommand):
     help = 'Ingests actual Cricsheet JSON files into the database and refreshes Materialized Views'
 
@@ -22,12 +34,10 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.ERROR(f"Path does not exist: {path}"))
             return
-
-        self.stdout.write(self.style.WARNING("Refreshing Materialized Views... This may take a moment."))
+        
+        self.stdout.write(self.style.WARNING("Refreshing ALL Materialized Views... This may take a moment."))
         try:
-            with connection.cursor() as cursor:
-                cursor.execute("REFRESH MATERIALIZED VIEW vw_match_summary;")
-                cursor.execute("REFRESH MATERIALIZED VIEW vw_delivery_analytics;")
+            refresh_all_materialized_views()
             self.stdout.write(self.style.SUCCESS("Materialized Views refreshed successfully! Backend is ready."))
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Failed to refresh views: {str(e)}"))
